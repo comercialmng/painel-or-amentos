@@ -3,9 +3,18 @@
 """
 inject_data.py — Le data.json gerado pelo build_from_bitrix.py
 e injeta os dados atualizados no HTML do painel.
+
+MAPEAMENTO CORRETO (variáveis reais do HTML):
+  records        → const PROP=[...]
+  sup_analysis   → const SUP_DATA=[...]
+  sup_mes_data   → const SUP_MES = []
+  diário         → const dailyD, dailyQ, dailyBotic, dailyZamp, etc.
+  orcamentistas  → const ORC_DETAIL, orcMesData, orcNames
+  supervisores   → const supN, scV, txV
 """
 import json, re
 from datetime import datetime
+from collections import defaultdict
 
 # ── Arquivos ──
 DATA_FILE = 'data.json'
@@ -28,235 +37,226 @@ men_valor    = D['men_valor']
 men_taxa     = D['men_taxa']
 meses_ord    = D['meses_ord']
 
-# Helpers
-def fmt_val(v):
-    v = float(v or 0)
-    if v >= 1_000_000: return f'R$ {v/1_000_000:.1f}M'
-    if v >= 1_000:     return f'R$ {v/1_000:.0f}K'
-    return f'R$ {v:,.0f}'
-
-def js(v):
-    return json.dumps(v, ensure_ascii=False)
-
 hoje = kpis.get('data_atualizacao', datetime.now().strftime('%d/%m/%Y %H:%M'))
-
 print(f"Dados: {kpis['total']} propostas | {kpis['aprovado']} aprovadas | Base: {hoje}")
 
+# ════════════════════════════════════════════════════════
+# Calcular dados diários a partir dos records
+# ════════════════════════════════════════════════════════
+BANDEIRAS_DAILY = {
+    'Boticário':     'dailyBotic',
+    'ZAMP-BK':       'dailyZamp',
+    'Leroy Merlin':  'dailyLeroy',
+    'Fundação':      'dailyFund',
+    'Carrefour/Grupo': 'dailyCarr',
+    'Sams':          'dailySams',
+    'Obramax':       'dailyObr',
+}
+
+daily_map = defaultdict(lambda: defaultdict(int))
+for r in records:
+    if not r.get('envio') or r['envio'] == '-':
+        continue
+    try:
+        dt = datetime.strptime(r['envio'], '%d/%m/%Y')
+        dia = dt.strftime('%d/%m')
+    except:
+        continue
+    daily_map[dia]['total'] += 1
+    band = r.get('cliente', '')
+    for b, var in BANDEIRAS_DAILY.items():
+        if band == b:
+            daily_map[dia][var] += 1
+
+# Ordena datas
+def sort_key(d):
+    try:
+        return datetime.strptime(d + '/2026', '%d/%m/%Y')
+    except:
+        return datetime.max
+
+dias_sorted = sorted(daily_map.keys(), key=sort_key)
+# Mantém apenas últimos 45 dias úteis no máximo
+dias_sorted = dias_sorted[-45:]
+
+dailyD    = dias_sorted
+dailyQ    = [daily_map[d]['total']    for d in dias_sorted]
+dailyBotic = [daily_map[d]['dailyBotic'] for d in dias_sorted]
+dailyZamp  = [daily_map[d]['dailyZamp']  for d in dias_sorted]
+dailyLeroy = [daily_map[d]['dailyLeroy'] for d in dias_sorted]
+dailyFund  = [daily_map[d]['dailyFund']  for d in dias_sorted]
+dailyCarr  = [daily_map[d]['dailyCarr']  for d in dias_sorted]
+dailySams  = [daily_map[d]['dailySams']  for d in dias_sorted]
+dailyObr   = [daily_map[d]['dailyObr']   for d in dias_sorted]
+
+# ════════════════════════════════════════════════════════
+# Calcular ORC_DETAIL, orcMesData, orcNames
+# ════════════════════════════════════════════════════════
+orc_map = defaultdict(lambda: {
+    'total': 0, 'aprovado': 0, 'aguardando': 0, 'reprovado': 0,
+    'valor': 0.0, 'sla_c': 0, 'sla_n': 0, 'by_month': defaultdict(lambda: {
+        'total': 0, 'aprovado': 0, 'aguardando': 0, 'reprovado': 0,
+        'sla_c': 0, 'sla_n': 0, 'valor': 0.0
+    })
+})
+
+for r in records:
+    o = r.get('orc') or 'Francyne Lima'
+    mes = r.get('mes', '')
+    status = r.get('status', '')
+    valor = float(r.get('valor') or 0)
+    sla = str(r.get('sla', '-'))
+
+    orc_map[o]['total'] += 1
+    orc_map[o]['valor'] += valor
+
+    if status == 'APROVADO':    orc_map[o]['aprovado']   += 1
+    elif status == 'REPROVADO': orc_map[o]['reprovado']  += 1
+    else:                       orc_map[o]['aguardando'] += 1
+
+    if sla == 'OK':   orc_map[o]['sla_c'] += 1
+    elif sla != '-':  orc_map[o]['sla_n'] += 1
+
+    if mes:
+        orc_map[o]['by_month'][mes]['total'] += 1
+        orc_map[o]['by_month'][mes]['valor'] += valor
+        if status == 'APROVADO':    orc_map[o]['by_month'][mes]['aprovado']   += 1
+        elif status == 'REPROVADO': orc_map[o]['by_month'][mes]['reprovado']  += 1
+        else:                       orc_map[o]['by_month'][mes]['aguardando'] += 1
+        if sla == 'OK':  orc_map[o]['by_month'][mes]['sla_c'] += 1
+        elif sla != '-': orc_map[o]['by_month'][mes]['sla_n'] += 1
+
+# Monta ORC_DETAIL
+orc_detail = {}
+for nome, d in sorted(orc_map.items(), key=lambda x: -x[1]['total']):
+    pct_aprov = round(d['aprovado'] / d['total'] * 100, 1) if d['total'] else 0
+    sla_total = d['sla_c'] + d['sla_n']
+    pct_sla   = round(d['sla_c'] / sla_total * 100, 1) if sla_total else 0
+    by_month  = []
+    for mes_str in sorted(d['by_month'].keys()):
+        m = d['by_month'][mes_str]
+        by_month.append({
+            'mes_str': mes_str,
+            'total': m['total'], 'aprovado': m['aprovado'],
+            'aguardando': m['aguardando'], 'reprovado': m['reprovado'],
+            'sla_c': m['sla_c'], 'sla_n': m['sla_n'],
+            'valor': round(m['valor'], 2)
+        })
+    orc_detail[nome] = {
+        'total': d['total'], 'aprovado': d['aprovado'],
+        'aguardando': d['aguardando'], 'reprovado': d['reprovado'],
+        'pct_aprov': pct_aprov, 'valor': round(d['valor'], 2),
+        'sla_c': d['sla_c'], 'sla_n': d['sla_n'],
+        'pct_sla': pct_sla, 'by_month': by_month
+    }
+
+# orcNames: nomes ordenados por total
+orc_names = [nome for nome, _ in sorted(orc_map.items(), key=lambda x: -x[1]['total'])]
+
+# orcMesData: {nome: [qtd por mes]}
+orc_mes_data = {}
+for nome in orc_names:
+    orc_mes_data[nome] = [
+        orc_map[nome]['by_month'].get(m, {}).get('total', 0)
+        for m in meses_ord
+    ]
+
+# ════════════════════════════════════════════════════════
+# Calcular supN, scV, txV
+# ════════════════════════════════════════════════════════
+sup_names  = [s['Supervisor'] for s in sup_analysis]
+sc_values  = [s.get('score', s['total'] - s['aprovado']) for s in sup_analysis[:12]]
+tx_values  = [s['taxa_aprov'] for s in sup_analysis]
+
+# ════════════════════════════════════════════════════════
+# SUP_MES — lista de objetos por supervisor/mes
+# ════════════════════════════════════════════════════════
+sup_mes_list = []
+for item in sup_mes_data:
+    sup_mes_list.append({
+        'mes_str':   item.get('mes_str', ''),
+        'Supervisor': item.get('Supervisor', ''),
+        'total':     item.get('total', 0),
+        'aprovado':  item.get('aprovado', 0),
+        'aguardando': item.get('aguardando', 0),
+        'reprovado': item.get('reprovado', 0),
+        'valor':     item.get('valor', 0)
+    })
+
+# ════════════════════════════════════════════════════════
+# Lê HTML
+# ════════════════════════════════════════════════════════
 print("Lendo HTML...")
 with open(HTML_FILE, 'r', encoding='utf-8') as f:
     html = f.read()
 
+# Helper
+def js(v):
+    return json.dumps(v, ensure_ascii=False)
+
+def replace_js_var(html, varname, new_value, is_object=False):
+    """Substitui const VARNAME = [...] ou const VARNAME = {...}"""
+    if is_object:
+        pattern = r'(const\s+' + re.escape(varname) + r'\s*=\s*)\{.*?\}(?=\s*;)'
+    else:
+        pattern = r'(const\s+' + re.escape(varname) + r'\s*=\s*)\[.*?\](?=\s*;)'
+    replacement = r'\g<1>' + js(new_value)
+    new_html, n = re.subn(pattern, replacement, html, flags=re.DOTALL)
+    if n == 0:
+        print(f"  ⚠️  Variável '{varname}' não encontrada no HTML")
+    else:
+        print(f"  ✅ {varname} atualizado")
+    return new_html
+
 # ════════════════════════════════════════════════════════
-# 1. Remove bloco de dados antigo (se existir de execucao anterior)
+# Substitui variáveis no HTML com nomes corretos
 # ════════════════════════════════════════════════════════
+print("Injetando dados...")
+
+# Arrays de propostas (principal)
+html = replace_js_var(html, 'PROP', records)
+
+# Supervisores
+html = replace_js_var(html, 'SUP_DATA', sup_analysis)
+html = replace_js_var(html, 'SUP_MES', sup_mes_list)
+html = replace_js_var(html, 'supN', sup_names)
+html = replace_js_var(html, 'scV', sc_values)
+html = replace_js_var(html, 'txV', tx_values)
+
+# Orçamentistas
+html = replace_js_var(html, 'ORC_DETAIL', orc_detail, is_object=True)
+html = replace_js_var(html, 'orcMesData', orc_mes_data, is_object=True)
+html = replace_js_var(html, 'orcNames', orc_names)
+
+# Diário
+html = replace_js_var(html, 'dailyD', dailyD)
+html = replace_js_var(html, 'dailyQ', dailyQ)
+html = replace_js_var(html, 'dailyBotic', dailyBotic)
+html = replace_js_var(html, 'dailyZamp', dailyZamp)
+html = replace_js_var(html, 'dailyLeroy', dailyLeroy)
+html = replace_js_var(html, 'dailyFund', dailyFund)
+html = replace_js_var(html, 'dailyCarr', dailyCarr)
+html = replace_js_var(html, 'dailySams', dailySams)
+html = replace_js_var(html, 'dailyObr', dailyObr)
+
+# Data de base no cabeçalho
 html = re.sub(
-    r'<!-- INJECT_DATA_START -->.*?<!-- INJECT_DATA_END -->',
-    '', html, flags=re.DOTALL
-)
-
-# ════════════════════════════════════════════════════════
-# 2. Monta bloco JS com todos os dados
-# ════════════════════════════════════════════════════════
-# Calcula dados por orcamentista a partir dos records
-orc_map = {}
-for r in records:
-    o = r.get('orc') or 'Francyne Lima'
-    if o not in orc_map:
-        orc_map[o] = {'total':0,'aprovado':0,'aguardando':0,'reprovado':0,'valor':0.0}
-    orc_map[o]['total']    += 1
-    orc_map[o]['valor']    += float(r.get('valor') or 0)
-    s = r.get('status','')
-    if s == 'APROVADO':    orc_map[o]['aprovado']   += 1
-    elif s == 'REPROVADO': orc_map[o]['reprovado']  += 1
-    else:                  orc_map[o]['aguardando'] += 1
-
-orc_rows = []
-for nome, d in sorted(orc_map.items(), key=lambda x: -x[1]['total']):
-    taxa = round(d['aprovado']/d['total']*100,1) if d['total'] else 0
-    orc_rows.append({
-        'Orcamentista': nome,
-        'total': d['total'], 'aprovado': d['aprovado'],
-        'aguardando': d['aguardando'], 'reprovado': d['reprovado'],
-        'taxa_aprov': taxa, 'valor': round(d['valor'],0)
-    })
-
-# Calcula dados por bandeira
-band_map = {}
-for r in records:
-    b = r.get('cliente') or 'Outros'
-    if b not in band_map:
-        band_map[b] = {'total':0,'aprovado':0,'valor':0.0}
-    band_map[b]['total'] += 1
-    band_map[b]['valor'] += float(r.get('valor') or 0)
-    if r.get('status') == 'APROVADO': band_map[b]['aprovado'] += 1
-
-band_rows = []
-for nome, d in sorted(band_map.items(), key=lambda x: -x[1]['total']):
-    taxa = round(d['aprovado']/d['total']*100,1) if d['total'] else 0
-    band_rows.append({
-        'bandeira': nome, 'total': d['total'],
-        'aprovado': d['aprovado'], 'taxa': taxa, 'valor': round(d['valor'],0)
-    })
-
-# SLA simulado (usando dados existentes)
-sla_pct   = kpis.get('sla_pct', 73.5)
-sla_fora  = kpis.get('sla_fora', 395)
-backlog   = kpis.get('aguardando', kpis['aguardando'])
-
-bloco = f"""<!-- INJECT_DATA_START -->
-<script>
-// ── Dados injetados automaticamente por inject_data.py ──
-// Geracao: {hoje}
-window._D = {{
-  kpis: {{
-    total:        {kpis['total']},
-    aprovado:     {kpis['aprovado']},
-    aguardando:   {kpis['aguardando']},
-    reprovado:    {kpis['reprovado']},
-    valor:        {kpis['valor']},
-    taxa_geral:   {kpis['taxa_geral']},
-    taxa_zamp:    {kpis['taxa_zamp']},
-    taxa_botic:   {kpis['taxa_botic']},
-    aprov_zamp:   {kpis['aprov_zamp']},
-    total_zamp:   {kpis['total_zamp']},
-    aprov_botic:  {kpis['aprov_botic']},
-    total_botic:  {kpis['total_botic']},
-    sla_pct:      {sla_pct},
-    sla_fora:     {sla_fora},
-    data_atualizacao: {js(hoje)}
-  }},
-  sup_analysis:  {js(sup_analysis)},
-  sup_mes_data:  {js(sup_mes_data)},
-  orc_analysis:  {js(orc_rows)},
-  band_analysis: {js(band_rows)},
-  men_labels:    {js(men_labels)},
-  men_total:     {js(men_total)},
-  men_aprov:     {js(men_aprov)},
-  men_aguar:     {js(men_aguar)},
-  men_reprov:    {js(men_reprov)},
-  men_valor:     {js(men_valor)},
-  men_taxa:      {js(men_taxa)},
-  meses_ord:     {js(meses_ord)},
-  records:       {js(records[:500])}
-}};
-
-// ── Aplica dados assim que DOM estiver pronto ──
-document.addEventListener('DOMContentLoaded', function() {{
-  try {{ applyInjectedData(window._D); }}
-  catch(e) {{ console.warn('applyInjectedData nao definida, usando fallback'); applyFallback(window._D); }}
-}});
-
-function applyFallback(D) {{
-  var K = D.kpis;
-
-  // KPIs texto simples — procura spans/divs com data-kpi
-  var map = {{
-    'kpi-total':      K.total,
-    'kpi-aprovado':   K.aprovado,
-    'kpi-aguardando': K.aguardando,
-    'kpi-reprovado':  K.reprovado,
-    'kpi-taxa':       K.taxa_geral + '%',
-    'kpi-taxa-zamp':  K.taxa_zamp + '%',
-    'kpi-taxa-botic': K.taxa_botic + '%',
-    'kpi-sla':        K.sla_pct + '%',
-    'kpi-sla-fora':   K.sla_fora,
-    'kpi-backlog':    K.aguardando,
-  }};
-  Object.keys(map).forEach(function(id) {{
-    var el = document.getElementById(id) || document.querySelector('[data-kpi="'+id+'"]');
-    if (el) el.textContent = map[id];
-  }});
-
-  // Data de base no cabecalho
-  ['hdate','data-base','header-date'].forEach(function(cls) {{
-    document.querySelectorAll('.'+cls+', #'+cls).forEach(function(el) {{
-      el.textContent = 'Base: ' + K.data_atualizacao;
-    }});
-  }});
-
-  // Valor total formatado
-  var vEl = document.getElementById('kpi-valor') || document.querySelector('[data-kpi="kpi-valor"]');
-  if (vEl) {{
-    var v = K.valor;
-    vEl.textContent = v >= 1e6 ? 'R$ '+(v/1e6).toFixed(1)+'M' : 'R$ '+(v/1e3).toFixed(0)+'K';
-  }}
-}}
-</script>
-<!-- INJECT_DATA_END -->"""
-
-# ════════════════════════════════════════════════════════
-# 3. Injeta antes de </body>
-# ════════════════════════════════════════════════════════
-html = html.replace('</body>', bloco + '\n</body>')
-
-# ════════════════════════════════════════════════════════
-# 4. Substitui variaveis JS hardcoded no HTML original
-#    (const K = {...}, const registros = [...], etc.)
-# ════════════════════════════════════════════════════════
-
-# KPIs numericos — substitui valores dentro do objeto K existente
-replacements = [
-    # total propostas
-    (r'(total\s*:\s*)\d+(\s*,?\s*//[^\n]*total)', lambda m: m.group(1)+str(kpis['total'])+m.group(2)),
-    # aprovado
-    (r'(aprovado\s*:\s*)\d+', lambda m: m.group(1)+str(kpis['aprovado'])),
-    # aguardando
-    (r'(aguardando\s*:\s*)\d+', lambda m: m.group(1)+str(kpis['aguardando'])),
-    # reprovado
-    (r'(reprovado\s*:\s*)\d+', lambda m: m.group(1)+str(kpis['reprovado'])),
-    # taxa_geral
-    (r'(taxa_geral\s*:\s*)[\d.]+', lambda m: m.group(1)+str(kpis['taxa_geral'])),
-    # valor
-    (r'(valor\s*:\s*)[\d.]+(\s*,?\s*//[^\n]*valor)', lambda m: m.group(1)+str(kpis['valor'])+m.group(2)),
-]
-
-for pattern, repl in replacements:
-    html = re.sub(pattern, repl, html)
-
-# Arrays mensais
-def replace_js_array(html, varname, new_list):
-    pattern = r'((?:const|let|var)\s+' + re.escape(varname) + r'\s*=\s*)\[.*?\]'
-    replacement = r'\g<1>' + json.dumps(new_list, ensure_ascii=False)
-    return re.sub(pattern, replacement, html, flags=re.DOTALL)
-
-html = replace_js_array(html, 'men_labels',  men_labels)
-html = replace_js_array(html, 'men_total',   men_total)
-html = replace_js_array(html, 'men_aprov',   men_aprov)
-html = replace_js_array(html, 'men_aguar',   men_aguar)
-html = replace_js_array(html, 'men_reprov',  men_reprov)
-html = replace_js_array(html, 'men_valor',   men_valor)
-html = replace_js_array(html, 'men_taxa',    men_taxa)
-html = replace_js_array(html, 'meses_ord',   meses_ord)
-
-# Arrays de analise supervisores e registros
-def replace_js_const(html, varname, new_data):
-    pattern = r'((?:const|let|var)\s+' + re.escape(varname) + r'\s*=\s*)\[.*?\](?=\s*;)'
-    replacement = r'\g<1>' + json.dumps(new_data, ensure_ascii=False, default=str)
-    return re.sub(pattern, replacement, html, flags=re.DOTALL)
-
-html = replace_js_const(html, 'sup_analysis', sup_analysis)
-html = replace_js_const(html, 'sup_mes_data', sup_mes_data)
-html = replace_js_const(html, 'registros',    records)
-html = replace_js_const(html, 'records',      records)
-
-# Data de base no cabecalho
-html = re.sub(
-    r'(Base:)\s*[\d/]+ [\d:]+',
-    'Base: ' + hoje,
+    r'(Base:\s*)[\d/]+ [\d:]+',
+    r'\g<1>' + hoje,
     html
 )
 html = re.sub(
-    r'(Base:)\s*[\d/]+',
-    'Base: ' + hoje,
+    r'(Base:\s*)[\d/]+(?!\s*\d{2}:)',
+    r'\g<1>' + hoje,
     html
 )
 
 # ════════════════════════════════════════════════════════
-# 5. Salva
+# Salva
 # ════════════════════════════════════════════════════════
 with open(HTML_FILE, 'w', encoding='utf-8') as f:
     f.write(html)
 
 size_kb = len(html.encode('utf-8')) // 1024
-print(f"✅ HTML atualizado: {HTML_FILE} ({size_kb} KB)")
-print(f"   Total: {kpis['total']} | Aprovadas: {kpis['aprovado']} | Taxa: {kpis['taxa_geral']}% | Valor: {fmt_val(kpis['valor'])}")
+print(f"\n✅ HTML atualizado: {HTML_FILE} ({size_kb} KB)")
+print(f"   Total: {kpis['total']} | Aprovadas: {kpis['aprovado']} | Taxa: {kpis['taxa_geral']}% | Base: {hoje}")
