@@ -38,4 +38,5 @@ jobs:
           git config user.email "actions@github.com"
           git add painel_orcamentos_2026_49.html
           git diff --staged --quiet || git commit -m "Painel atualizado $(date '+%d/%m/%Y %H:%M')"
+          git pull --rebase origin main
           git push
