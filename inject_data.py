@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-inject_data.py v3.1 - DEFINITIVO
+inject_data.py v3.2 - DEFINITIVO
 Le data.json e injeta todos os dados no HTML do painel.
 """
 import json, re, sys, os
@@ -105,6 +105,86 @@ for var, valor in variaveis:
     except Exception as e:
         erros.append(f"  ERRO {var}: {e}")
 
+# ── Atualiza o bloco window._D (usado pela Visão Geral) ──
+inject_data_block = """<script>
+// ── Dados injetados automaticamente por inject_data.py ──
+// Geracao: {data_atualizacao}
+window._D = {{
+  kpis: {{
+    total:        {total},
+    aprovado:     {aprovado},
+    aguardando:   {aguardando},
+    reprovado:    {reprovado},
+    valor:        {valor},
+    taxa_geral:   {taxa_geral},
+    taxa_zamp:    {taxa_zamp},
+    taxa_botic:   {taxa_botic},
+    aprov_zamp:   {aprov_zamp},
+    total_zamp:   {total_zamp},
+    aprov_botic:  {aprov_botic},
+    total_botic:  {total_botic},
+    sla_pct:      {sla_pct},
+    sla_fora:     {sla_fora},
+    data_atualizacao: {data_atualizacao_js}
+  }},
+  sup_analysis:  {sup_analysis},
+  sup_mes_data:  {sup_mes_data},
+  orc_analysis:  {orc_analysis},
+  band_analysis: {band_analysis},
+  men_labels:    {men_labels},
+  men_total:     {men_total},
+  men_aprov:     {men_aprov},
+  men_aguar:     {men_aguar},
+  men_reprov:    {men_reprov},
+  men_valor:     {men_valor},
+  men_taxa:      {men_taxa},
+  meses_ord:     {meses_ord},
+  records:       {records}
+}};
+
+document.addEventListener('DOMContentLoaded', function() {{
+  try {{ applyInjectedData(window._D); }}
+  catch(e) {{ console.warn('applyInjectedData nao definida, usando fallback'); applyFallback(window._D); }}
+}});
+</script>""".format(
+    data_atualizacao=kpis.get('data_atualizacao', ''),
+    total=kpis.get('total', 0),
+    aprovado=kpis.get('aprovado', 0),
+    aguardando=kpis.get('aguardando', 0),
+    reprovado=kpis.get('reprovado', 0),
+    valor=kpis.get('valor', 0),
+    taxa_geral=kpis.get('taxa_geral', 0),
+    taxa_zamp=kpis.get('taxa_zamp', 0),
+    taxa_botic=kpis.get('taxa_botic', 0),
+    aprov_zamp=kpis.get('aprov_zamp', 0),
+    total_zamp=kpis.get('total_zamp', 0),
+    aprov_botic=kpis.get('aprov_botic', 0),
+    total_botic=kpis.get('total_botic', 0),
+    sla_pct=kpis.get('sla_pct', 0),
+    sla_fora=kpis.get('sla_fora', 0),
+    data_atualizacao_js=js(kpis.get('data_atualizacao', '')),
+    sup_analysis=js(data.get('sup_analysis', [])),
+    sup_mes_data=js(data.get('sup_mes_data', [])),
+    orc_analysis=js(data.get('orc_analysis', [])),
+    band_analysis=js(data.get('band_analysis', [])),
+    men_labels=js(data.get('men_labels', [])),
+    men_total=js(data.get('men_total', [])),
+    men_aprov=js(data.get('men_aprov', [])),
+    men_aguar=js(data.get('men_aguar', [])),
+    men_reprov=js(data.get('men_reprov', [])),
+    men_valor=js(data.get('men_valor', [])),
+    men_taxa=js(data.get('men_taxa', [])),
+    meses_ord=js(data.get('meses_ord', [])),
+    records=js(records),
+)
+
+html = re.sub(
+    r'<!-- INJECT_DATA_START -->.*?<!-- INJECT_DATA_END -->',
+    f'<!-- INJECT_DATA_START -->\n{inject_data_block}\n<!-- INJECT_DATA_END -->',
+    html,
+    flags=re.DOTALL
+)
+
 with open(HTML_FILE, 'w', encoding='utf-8') as f:
     f.write(html)
 
@@ -139,3 +219,4 @@ if erros:
     for e in erros: print(e)
 else:
     print(f"\n✓ Todas as {len(variaveis)} variáveis injetadas sem erros.")
+    print(f"✓ Bloco window._D atualizado com dados de {kpis.get('data_atualizacao','')}")
