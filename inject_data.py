@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-inject_data.py v3.2 - DEFINITIVO
+inject_data.py v3.3 - DEFINITIVO
 Le data.json e injeta todos os dados no HTML do painel.
+Inclui substituicao dos valores hardcoded na Visao Geral.
 """
 import json, re, sys, os
 from datetime import datetime
@@ -184,6 +185,79 @@ html = re.sub(
     html,
     flags=re.DOTALL
 )
+
+# ── Substitui valores hardcoded na Visão Geral ──
+total      = kpis.get('total', 0)
+aprovado   = kpis.get('aprovado', 0)
+aguardando = kpis.get('aguardando', 0)
+reprovado  = kpis.get('reprovado', 0)
+taxa_geral = kpis.get('taxa_geral', 0)
+taxa_zamp  = kpis.get('taxa_zamp', 0)
+taxa_botic = kpis.get('taxa_botic', 0)
+aprov_zamp  = kpis.get('aprov_zamp', 0)
+total_zamp  = kpis.get('total_zamp', 0)
+aprov_botic = kpis.get('aprov_botic', 0)
+total_botic = kpis.get('total_botic', 0)
+data_atual = kpis.get('data_atualizacao', '')
+
+# KPI Total propostas
+html = re.sub(
+    r'(<div class="kt">Total propostas</div><div class="kv">)\d+(</div>)',
+    rf'\g<1>{total}\2', html
+)
+
+# KPI Aprovadas
+html = re.sub(
+    r'(<div class="kt">Aprovadas</div><div class="kv"[^>]*>)\d+(</div>)',
+    rf'\g<1>{aprovado}\2', html
+)
+
+# KPI Aprovadas no funil (texto dentro do canvas aria-label)
+html = re.sub(
+    r'(\d+) aprovadas, (\d+) aguardando, (\d+) reprovadas\.',
+    rf'{aprovado} aprovadas, {aguardando} aguardando, {reprovado} reprovadas.', html
+)
+
+# Aprovadas no card do funil
+html = re.sub(
+    r'(<div style="font-size:15px;font-weight:700;color:#16a34a">)\d+(</div>)',
+    rf'\g<1>{aprovado}\2', html
+)
+
+# Taxa de conversão no card do funil  
+html = re.sub(
+    r'(\d+\.\d+)% de conversão(</div><div style="font-size:11px)',
+    rf'{taxa_geral}% de conversão\2', html
+)
+
+# Subtítulos "X aprovadas de Y"
+html = re.sub(
+    r'\d+ aprovadas de 2[,.]?\d+',
+    f'{aprovado} aprovadas de {total}', html
+)
+html = re.sub(
+    r'\d+ aprovadas de \d+(<br|</div>)',
+    lambda m: f'{aprov_zamp} aprovadas de {total_zamp}{m.group(1)}'
+    if 'ZAMP' not in m.group(0) else m.group(0),
+    html
+)
+
+# Data base no cabeçalho (canto superior direito)
+html = re.sub(
+    r'Base: \d{2}/\d{2}/\d{4} \d{2}:\d{2}',
+    f'Base: {data_atual}', html
+)
+
+# Data dentro do bloco injetado (Geracao)
+# já coberta pelo window._D acima
+
+# Tabela de supervisores - total geral
+html = re.sub(
+    r'(<tbody id="sup-tbody"><tr><td><b>Ronie Bandeira</b></td><td class="mono">)\d+(</td>)',
+    rf'\g<1>{total}\2', html
+)
+
+print(f"✓ Valores hardcoded da Visão Geral substituídos")
 
 with open(HTML_FILE, 'w', encoding='utf-8') as f:
     f.write(html)
