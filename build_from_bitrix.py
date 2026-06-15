@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
 GitHub Actions - Busca dados do Bitrix24 (crm.quote) e gera data.json
-v2.0 - Correcoes:
-  BUG1: select[] como lista de tuplas (nao dict)
-  BUG3: inject usa regex dinamico
-  NOVO: descoberta automatica de campos UF_CRM via crm.quote.fields
+v2.1 - Diagnostico STATUS_ID adicionado (sem alteracao de logica)
 """
 import os, json, requests, sys
 from datetime import datetime, timedelta
@@ -63,7 +60,7 @@ def norm_sup(name):
     if not name: return 'Ronie Bandeira'
     name = str(name).strip()
     m = NAME_MAP.get(name)
-    if m is None and name in NAME_MAP: return None  # orçamentista
+    if m is None and name in NAME_MAP: return None
     if m: return m
     for s in SUPERVISORES_OFICIAIS:
         if s.lower() == name.lower(): return s
@@ -94,7 +91,6 @@ def get_status(s):
     return 'AGUARDANDO'
 
 def parse_dt(val):
-    """Parse datetime string robustly."""
     if not val: return None
     try:
         s = str(val).replace('T',' ').split('+')[0].split('.')[0].strip()
@@ -103,23 +99,13 @@ def parse_dt(val):
         return None
 
 def calc_sla(dt_backlog, dt_criado, dt_envio, tipo):
-    """
-    Calcula SLA conforme regra de negocio:
-    - PROGRAMADA: prazo 72h
-    - EMERGENCIAL: prazo 24h
-    Prioridade 1: dt_backlog (campo obrigatorio nos novos)
-    Prioridade 2: dt_criado como entrada (fallback para registros antigos)
-    """
     prazo = 24 if str(tipo or '').upper() == 'EMERGENCIAL' else 72
-
     dt_entrada = dt_backlog or dt_criado
     if not dt_entrada or not dt_envio:
         return '-', 'SEM_DATA'
-
     horas = (dt_envio - dt_entrada).total_seconds() / 3600
     if horas < 0:
-        horas = abs(horas)  # dados inconsistentes
-
+        horas = abs(horas)
     resultado = 'CUMPRIU' if horas <= prazo else 'NÃO CUMPRIU'
     fonte = 'backlog' if dt_backlog else 'criado_em'
     return resultado, fonte
@@ -129,7 +115,7 @@ print("=" * 60)
 print("ETAPA 1: Descoberta de campos UF_CRM via crm.quote.fields")
 print("=" * 60)
 
-FIELD_MAP = {}  # label_lower -> code
+FIELD_MAP = {}
 FIELD_TYPES = {}
 
 try:
@@ -137,7 +123,6 @@ try:
     fields_data = r.json()
     all_fields = fields_data.get('result', {})
 
-    # Campos que queremos descobrir (label em portugues -> chave interna)
     TARGETS = {
         'número da proposta':   'f_numero_proposta',
         'numero da proposta':   'f_numero_proposta',
@@ -163,10 +148,7 @@ try:
         label = finfo.get('listLabel') or finfo.get('title') or finfo.get('formLabel') or ''
         ftype = finfo.get('type', '')
         label_clean = str(label).lower().strip()
-
         print(f"{code:<40} {ftype:<20} {label}")
-
-        # Auto-map
         for target_label, key in TARGETS.items():
             if target_label in label_clean:
                 FIELD_MAP[key] = code
@@ -182,13 +164,11 @@ try:
 
 except Exception as e:
     print(f"ERRO ao buscar campos: {e}")
-    print("Usando codigos presumidos como fallback...")
 
 print("\nMAPEAMENTO DESCOBERTO:")
 for key, code in FIELD_MAP.items():
     print(f"  {key:<30} -> {code}")
 
-# Fallbacks para campos nao descobertos
 FALLBACKS = {
     'f_numero_proposta': ['UF_CRM_QUOTE_NUMERO','UF_CRM_1_NUMERO_PROPOSTA','UF_CRM_NUMBER'],
     'f_supervisor':      ['UF_CRM_QUOTE_SUPERVISOR','UF_CRM_1_SUPERVISOR','UF_CRM_SUPERVISOR'],
@@ -200,10 +180,9 @@ FALLBACKS = {
 }
 for key, candidates in FALLBACKS.items():
     if key not in FIELD_MAP:
-        FIELD_MAP[key] = candidates[0]  # usa primeiro fallback
+        FIELD_MAP[key] = candidates[0]
         print(f"  {key:<30} -> {candidates[0]} (FALLBACK - nao descoberto)")
 
-# ══ TODOS OS CAMPOS A SELECIONAR ══
 SELECT_FIELDS = list(set([
     'ID', 'TITLE', 'STATUS_ID', 'OPPORTUNITY', 'DATE_CREATE',
     'ASSIGNED_BY_ID', 'DATE_MODIFY',
@@ -221,7 +200,7 @@ SELECT_FIELDS = [f for f in SELECT_FIELDS if f]
 print(f"\nSELECT total: {len(SELECT_FIELDS)} campos")
 print(f"  {SELECT_FIELDS}")
 
-# ══ ETAPA 2: USUARIOS ══
+# ══ ETAPA 2: USUARIOS (mantida por compatibilidade) ══
 print("\n" + "=" * 60)
 print("ETAPA 2: Buscando usuários")
 print("=" * 60)
@@ -251,7 +230,6 @@ all_quotes = []
 start = 0
 
 while True:
-    # BUG1 FIX: params como lista de tuplas
     params = [
         ('filter[>DATE_CREATE]', '2026-01-01'),
         ('order[DATE_CREATE]', 'DESC'),
@@ -292,6 +270,22 @@ while True:
 
 print(f"\nTotal obtido: {len(all_quotes)} orçamentos")
 
+# ══ DIAGNÓSTICO STATUS_ID ══
+print("\n" + "=" * 60)
+print("DIAGNÓSTICO: STATUS_ID encontrados no dataset")
+print("=" * 60)
+status_brutos = {}
+for q in all_quotes:
+    s = q.get('STATUS_ID') or 'VAZIO'
+    status_brutos[s] = status_brutos.get(s, 0) + 1
+print(f"\n{'STATUS_ID':<35} {'QUANTIDADE':>10}")
+print("-" * 47)
+for k, v in sorted(status_brutos.items(), key=lambda x: -x[1]):
+    print(f"{k:<35} {v:>10}")
+print("-" * 47)
+print(f"{'TOTAL':<35} {len(all_quotes):>10}")
+print("=" * 60)
+
 # Debug primeiro registro
 if all_quotes:
     q0 = all_quotes[0]
@@ -301,8 +295,8 @@ if all_quotes:
     print(f"  STATUS_ID: {q0.get('STATUS_ID','N/A')}")
     print(f"  OPPORTUNITY: {q0.get('OPPORTUNITY','N/A')}")
     print(f"  DATE_CREATE: {q0.get('DATE_CREATE','N/A')}")
-    f_num = FIELD_MAP.get('f_numero_proposta','')
-    f_sup = FIELD_MAP.get('f_supervisor','')
+    f_num  = FIELD_MAP.get('f_numero_proposta','')
+    f_sup  = FIELD_MAP.get('f_supervisor','')
     f_elab = FIELD_MAP.get('f_elaborado_por','')
     f_tipo = FIELD_MAP.get('f_tipo_solicitacao','')
     f_back = FIELD_MAP.get('f_data_backlog','')
@@ -323,42 +317,34 @@ records = []
 by_sup = {}
 by_mes = {}
 sla_stats = {'backlog':0, 'fallback_criado':0, 'sem_data':0}
-
-# Referência para busca C38138-26
 c38138_found = None
 
 for q in all_quotes:
-    # Status
     status = get_status(q.get('STATUS_ID',''))
 
-    # Supervisor: campo custom > pessoa responsável
     f_sup = FIELD_MAP.get('f_supervisor','')
     sup_raw = q.get(f_sup) or users.get(str(q.get('ASSIGNED_BY_ID','')), '')
     sup = norm_sup(sup_raw)
     if sup is None:
-        continue  # orçamentista, pula
+        continue
 
-    # Bandeira
     f_band = FIELD_MAP.get('f_bandeira','')
     bandeira = get_bandeira(q.get('TITLE',''), q.get(f_band,''))
 
-    # Valor
     valor = float(q.get('OPPORTUNITY') or 0)
 
-    # Datas
-    dt_criado = parse_dt(q.get('DATE_CREATE'))
-    f_back = FIELD_MAP.get('f_data_backlog','')
-    f_envio_f = FIELD_MAP.get('f_data_envio','')
+    dt_criado  = parse_dt(q.get('DATE_CREATE'))
+    f_back     = FIELD_MAP.get('f_data_backlog','')
+    f_envio_f  = FIELD_MAP.get('f_data_envio','')
     dt_backlog = parse_dt(q.get(f_back))
-    dt_envio = parse_dt(q.get(f_envio_f))
+    dt_envio   = parse_dt(q.get(f_envio_f))
 
-    mes = dt_criado.strftime('%Y-%m') if dt_criado else ''
+    mes       = dt_criado.strftime('%Y-%m') if dt_criado else ''
     mes_label = dt_criado.strftime('%b/%y') if dt_criado else ''
     envio_str = dt_envio.strftime('%d/%m/%Y') if dt_envio else (
         dt_criado.strftime('%d/%m/%Y') if dt_criado else '-'
     )
 
-    # Tipo de solicitação
     f_tipo = FIELD_MAP.get('f_tipo_solicitacao','')
     tipo = str(q.get(f_tipo) or 'PROGRAMADA').upper()
     if 'EMERG' in tipo:
@@ -366,27 +352,22 @@ for q in all_quotes:
     else:
         tipo = 'PROGRAMADA'
 
-    # SLA
     sla, sla_fonte = calc_sla(dt_backlog, dt_criado, dt_envio, tipo)
     sla_stats[{'backlog':'backlog','criado_em':'fallback_criado','SEM_DATA':'sem_data'}.get(sla_fonte,'sem_data')] += 1
 
-    # Orçamentista
     f_elab = FIELD_MAP.get('f_elaborado_por','')
-    f_orc = FIELD_MAP.get('f_orcamentista','')
+    f_orc  = FIELD_MAP.get('f_orcamentista','')
     orc = q.get(f_elab) or q.get(f_orc)
     if not orc:
         orc = 'Ana Beatriz Araújo' if bandeira == 'ZAMP-BK' else 'Francyne Lima'
 
-    # Número da proposta: campo custom > parse do TITLE > ID
     f_num = FIELD_MAP.get('f_numero_proposta','')
     prop = q.get(f_num) or ''
     if not prop:
-        # Tenta extrair do TITLE padrão C\d+-26
         import re
         m = re.search(r'(C\d{4,6}-\d{2}\w*)', str(q.get('TITLE','')))
         prop = m.group(1) if m else str(q.get('ID',''))
 
-    # Cliente: usa TITLE (campo mais confiável - 100% preenchido)
     cliente = str(q.get('TITLE') or '')[:50]
 
     record = {
@@ -407,12 +388,10 @@ for q in all_quotes:
     }
     records.append(record)
 
-    # Rastreia C38138-26
     if '38138' in str(prop):
         c38138_found = record
         print(f"  ✓ C38138-26 encontrado: status={status} sup={sup} valor={valor} sla={sla}")
 
-    # Acumula stats
     if sup not in by_sup:
         by_sup[sup] = {'total':0,'aprovado':0,'aguardando':0,'reprovado':0,'valor':0.0}
     by_sup[sup]['total'] += 1
@@ -436,9 +415,9 @@ print("\n" + "=" * 60)
 print("ETAPA 5: Estatísticas")
 print("=" * 60)
 
-total_r = len(records)
-aprovado_r = sum(1 for r in records if r['status']=='APROVADO')
-aguardando_r = sum(1 for r in records if r['status']=='AGUARDANDO')
+total_r     = len(records)
+aprovado_r  = sum(1 for r in records if r['status']=='APROVADO')
+aguardando_r= sum(1 for r in records if r['status']=='AGUARDANDO')
 reprovado_r = sum(1 for r in records if r['status']=='REPROVADO')
 valor_total = sum(r['valor'] for r in records)
 
@@ -470,7 +449,7 @@ print(f"  Fallback DATE_CREATE (P2): {sla_stats['fallback_criado']}")
 print(f"  Sem data suficiente: {sla_stats['sem_data']}")
 
 jun_count = meses_stats.get('2026-06', {}).get('total', 0)
-print(f"\n✓ JUNHO 2026: {jun_count} propostas (era 50 antes da correcao)")
+print(f"\n✓ JUNHO 2026: {jun_count} propostas")
 
 if c38138_found:
     print(f"\n✓ C38138-26 encontrada:")
@@ -491,12 +470,13 @@ for sup, d in sorted(by_sup.items(), key=lambda x: -x[1]['total']):
 
 sup_mes_data = sorted(by_mes.values(), key=lambda x: (x['mes_str'], x['Supervisor']))
 
-men_total  = [meses_stats[m]['total'] for m in meses_ord]
+men_total  = [meses_stats[m]['total']    for m in meses_ord]
 men_aprov  = [meses_stats[m]['aprovado'] for m in meses_ord]
 men_aguar  = [meses_stats[m]['aguardando'] for m in meses_ord]
 men_reprov = [meses_stats[m]['reprovado'] for m in meses_ord]
 men_valor  = [round(meses_stats[m]['valor']/1000) for m in meses_ord]
-men_taxa   = [round(meses_stats[m]['aprovado']/meses_stats[m]['total']*100,1) if meses_stats[m]['total'] else 0 for m in meses_ord]
+men_taxa   = [round(meses_stats[m]['aprovado']/meses_stats[m]['total']*100,1)
+              if meses_stats[m]['total'] else 0 for m in meses_ord]
 men_labels = [datetime.strptime(m,'%Y-%m').strftime('%b/%y') for m in meses_ord]
 
 by_band = {}
@@ -511,10 +491,9 @@ for r in records:
 zamp  = by_band.get('ZAMP-BK',{})
 botic = by_band.get('Boticário',{})
 taxa_geral = round(aprovado_r/total_r*100,1) if total_r else 0
-taxa_zamp  = round(zamp.get('aprovado',0)/zamp.get('total',1)*100,1) if zamp.get('total') else 0
+taxa_zamp  = round(zamp.get('aprovado',0)/zamp.get('total',1)*100,1)  if zamp.get('total')  else 0
 taxa_botic = round(botic.get('aprovado',0)/botic.get('total',1)*100,1) if botic.get('total') else 0
 
-# Salva também o mapeamento de campos descoberto
 payload = {
     'records': records,
     'sup_analysis': sup_analysis,
