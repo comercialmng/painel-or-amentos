@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-inject_data.py v3.3 - DEFINITIVO
+inject_data.py v3.4 - DEFINITIVO
 Le data.json e injeta todos os dados no HTML do painel.
-Inclui substituicao dos valores hardcoded na Visao Geral.
+Corrige window._D e data base no cabecalho.
 """
 import json, re, sys, os
 from datetime import datetime
@@ -40,7 +40,6 @@ print("Injetando dados no HTML...")
 erros = []
 
 variaveis = [
-    # KPIs visão geral
     ('totalPropostas',      kpis.get('total', 0)),
     ('valorTotal',          kpis.get('valor', 0)),
     ('totalAprovadas',      kpis.get('aprovado', 0)),
@@ -54,7 +53,6 @@ variaveis = [
     ('aprovBoticario',      kpis.get('aprov_botic', 0)),
     ('totalBoticario',      kpis.get('total_botic', 0)),
     ('dataAtualizacao',     kpis.get('data_atualizacao', '')),
-    # Etapas operacionais
     ('etapaMplan',          kpis.get('etapa_mplan', 0)),
     ('etapaAprovSup',       kpis.get('etapa_aprov_sup', 0)),
     ('etapaBacklogGeral',   kpis.get('etapa_backlog_geral', 0)),
@@ -66,17 +64,14 @@ variaveis = [
     ('etapaAceito',         kpis.get('etapa_aceito', 0)),
     ('etapaRecusado',       kpis.get('etapa_recusado', 0)),
     ('etapaNaoAprovadas',   kpis.get('etapa_nao_aprovadas', 0)),
-    # SLA
     ('slaBacklog',          kpis.get('sla_backlog', 0)),
     ('slaFallback',         kpis.get('sla_fallback', 0)),
     ('slaSemData',          kpis.get('sla_sem_data', 0)),
-    # Temperatura
     ('tempQuente',          temp_niv.get('QUENTE', 0)),
     ('tempMorno',           temp_niv.get('MORNO', 0)),
     ('tempEsfriando',       temp_niv.get('ESFRIANDO', 0)),
     ('tempFrio',            temp_niv.get('FRIO', 0)),
     ('tempSemData',         temp_niv.get('SEM_DATA', 0)),
-    # Mensal
     ('mesesLabels',         data.get('men_labels', [])),
     ('mesesTotal',          data.get('men_total', [])),
     ('mesesAprov',          data.get('men_aprov', [])),
@@ -85,18 +80,12 @@ variaveis = [
     ('mesesValor',          data.get('men_valor', [])),
     ('mesesTaxa',           data.get('men_taxa', [])),
     ('mesesOrd',            data.get('meses_ord', [])),
-    # Supervisores
     ('supAnalysis',         data.get('sup_analysis', [])),
     ('supMesData',          data.get('sup_mes_data', [])),
-    # Orçamentistas
     ('orcAnalysis',         data.get('orc_analysis', [])),
-    # Regiões
     ('ufAnalysis',          data.get('uf_analysis', [])),
-    # Bandeiras
     ('bandAnalysis',        data.get('band_analysis', [])),
-    # Records completos
     ('allRecords',          records),
-    # Retrocompatibilidade
     ('junTotal',            kpis.get('jun_total', 0)),
 ]
 
@@ -186,78 +175,15 @@ html = re.sub(
     flags=re.DOTALL
 )
 
-# ── Substitui valores hardcoded na Visão Geral ──
-total      = kpis.get('total', 0)
-aprovado   = kpis.get('aprovado', 0)
-aguardando = kpis.get('aguardando', 0)
-reprovado  = kpis.get('reprovado', 0)
-taxa_geral = kpis.get('taxa_geral', 0)
-taxa_zamp  = kpis.get('taxa_zamp', 0)
-taxa_botic = kpis.get('taxa_botic', 0)
-aprov_zamp  = kpis.get('aprov_zamp', 0)
-total_zamp  = kpis.get('total_zamp', 0)
-aprov_botic = kpis.get('aprov_botic', 0)
-total_botic = kpis.get('total_botic', 0)
+# ── Corrige data base no cabecalho ──
 data_atual = kpis.get('data_atualizacao', '')
-
-# KPI Total propostas
-html = re.sub(
-    r'(<div class="kt">Total propostas</div><div class="kv">)\d+(</div>)',
-    rf'\g<1>{total}\2', html
-)
-
-# KPI Aprovadas
-html = re.sub(
-    r'(<div class="kt">Aprovadas</div><div class="kv"[^>]*>)\d+(</div>)',
-    rf'\g<1>{aprovado}\2', html
-)
-
-# KPI Aprovadas no funil (texto dentro do canvas aria-label)
-html = re.sub(
-    r'(\d+) aprovadas, (\d+) aguardando, (\d+) reprovadas\.',
-    rf'{aprovado} aprovadas, {aguardando} aguardando, {reprovado} reprovadas.', html
-)
-
-# Aprovadas no card do funil
-html = re.sub(
-    r'(<div style="font-size:15px;font-weight:700;color:#16a34a">)\d+(</div>)',
-    rf'\g<1>{aprovado}\2', html
-)
-
-# Taxa de conversão no card do funil  
-html = re.sub(
-    r'(\d+\.\d+)% de conversão(</div><div style="font-size:11px)',
-    rf'{taxa_geral}% de conversão\2', html
-)
-
-# Subtítulos "X aprovadas de Y"
-html = re.sub(
-    r'\d+ aprovadas de 2[,.]?\d+',
-    f'{aprovado} aprovadas de {total}', html
-)
-html = re.sub(
-    r'\d+ aprovadas de \d+(<br|</div>)',
-    lambda m: f'{aprov_zamp} aprovadas de {total_zamp}{m.group(1)}'
-    if 'ZAMP' not in m.group(0) else m.group(0),
-    html
-)
-
-# Data base no cabeçalho (canto superior direito)
-html = re.sub(
-    r'Base: \d{2}/\d{2}/\d{4} \d{2}:\d{2}',
-    f'Base: {data_atual}', html
-)
-
-# Data dentro do bloco injetado (Geracao)
-# já coberta pelo window._D acima
-
-# Tabela de supervisores - total geral
-html = re.sub(
-    r'(<tbody id="sup-tbody"><tr><td><b>Ronie Bandeira</b></td><td class="mono">)\d+(</td>)',
-    rf'\g<1>{total}\2', html
-)
-
-print(f"✓ Valores hardcoded da Visão Geral substituídos")
+if data_atual:
+    html = re.sub(
+        r'Base: \d{2}/\d{2}/\d{4} \d{2}:\d{2}',
+        f'Base: {data_atual}',
+        html
+    )
+    print(f"✓ Data base atualizada: {data_atual}")
 
 with open(HTML_FILE, 'w', encoding='utf-8') as f:
     f.write(html)
